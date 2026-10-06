@@ -18,7 +18,7 @@
     "start:prod": "node dist/main",
     "typeorm": "typeorm-ts-node-commonjs -d src/database/data-source.ts",
     "migration:generate": "npm run typeorm -- migration:generate src/database/migrations/schema-update",
-    "migration:run": "npm run typeorm -- migration:run",
+    "migration:run": "npm run typeorm -- migration:run --transaction each",
     "migration:revert": "npm run typeorm -- migration:revert",
     "db:create": "node scripts/create-database.js",
     "db:setup": "npm run db:create && npm run migration:run",

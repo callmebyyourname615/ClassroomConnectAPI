@@ -1,9 +1,33 @@
+import { Type } from 'class-transformer';
+import { IsInt, IsNumber, IsOptional, IsUUID, Min } from 'class-validator';
+
 export class CreateEvaluationDto {
-  studentId: string; // นักเรียน
-  adminId: string; // ครู/ผู้สอน
-  subjectId?: string; // วิชาที่กำลังสอน
-  classId?: string; // ห้องเรียนที่กำลังสอน
-  subjectEvaluationId?: string; // optional เชื่อมกับหัวข้อ evaluation
-  score: number; // คะแนน
-  contentIndex?: number; // index ใน subjectEvaluation.contents[] (default 0)
+  @IsUUID()
+  studentId: string;
+
+  @IsUUID()
+  adminId: string;
+
+  @IsOptional()
+  @IsUUID()
+  subjectId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  classId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  subjectEvaluationId?: string;
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  score: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  contentIndex?: number;
 }

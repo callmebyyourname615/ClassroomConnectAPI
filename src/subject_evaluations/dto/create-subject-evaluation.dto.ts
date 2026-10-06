@@ -5,10 +5,18 @@ import {
   IsOptional,
   IsArray,
   IsObject,
+  IsNumber,
+  Min,
   ValidateNested,
 } from 'class-validator';
 
 export class ContentDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  maxScore?: number;
+
   @IsString()
   t_title: string;
 

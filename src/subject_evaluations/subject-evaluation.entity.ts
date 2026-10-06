@@ -37,6 +37,7 @@ export class SubjectEvaluation {
 
   @Column({ type: 'jsonb', default: [] })
   contents: {
+    maxScore?: number;
     t_title: string;
     t_page: string;
     e_title?: string[];

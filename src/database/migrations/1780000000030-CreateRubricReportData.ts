@@ -5,7 +5,7 @@ export class CreateRubricReportData1780000000030 implements MigrationInterface {
 
   async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
-      CREATE TABLE "rubric_report_data" (
+      CREATE TABLE IF NOT EXISTS "rubric_report_data" (
         "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
         "kind" varchar(64) NOT NULL,
         "scope_key" varchar(255) NOT NULL,
@@ -21,7 +21,7 @@ export class CreateRubricReportData1780000000030 implements MigrationInterface {
         CONSTRAINT "UQ_rubric_report_data_scope" UNIQUE ("kind", "scope_key")
       )
     `);
-    await queryRunner.query(`CREATE INDEX "IDX_rubric_report_data_lookup" ON "rubric_report_data" ("kind", "class_id", "report_year", "report_month")`);
+    await queryRunner.query(`CREATE INDEX IF NOT EXISTS "IDX_rubric_report_data_lookup" ON "rubric_report_data" ("kind", "class_id", "report_year", "report_month")`);
   }
 
   async down(queryRunner: QueryRunner): Promise<void> {
