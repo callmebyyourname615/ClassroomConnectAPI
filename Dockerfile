@@ -24,7 +24,12 @@ WORKDIR /app
 COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
-RUN mkdir -p uploads logs \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade perl-base \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+    && mkdir -p uploads logs \
     && chown node:node uploads logs
 USER node
 # API main.ts still binds 127.0.0.1. Run with --network host on Linux.
