@@ -12,25 +12,27 @@ RUN npm run build \
     && test -f dist/main.js \
     && test -f dist/database/data-source.js
 
+RUN mkdir -p /runtime/bin /runtime/uploads /runtime/logs \
+    && ln -s /nodejs/bin/node /runtime/bin/node
+
 FROM ${NODE_IMAGE} AS production-dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund \
     && npm cache clean --force
 
-FROM ${NODE_IMAGE} AS production
+FROM gcr.io/distroless/nodejs24-debian13:nonroot AS production
 ENV NODE_ENV=production
+ENV PATH="/usr/local/bin:/usr/bin:/bin"
 WORKDIR /app
 COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends --only-upgrade perl-base \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
-    && mkdir -p uploads logs \
-    && chown node:node uploads logs
-USER node
-# API main.ts still binds 127.0.0.1. Run with --network host on Linux.
-# Set PORT and school-specific credentials at runtime; no secrets baked in.
+COPY --from=build /runtime/bin/ /usr/local/bin/
+COPY --from=build --chown=1000:1000 /runtime/uploads/ /app/uploads/
+COPY --from=build --chown=1000:1000 /runtime/logs/ /app/logs/
+USER 1000:1000
+# Keep node commands compatible with smoke checks and migration commands.
+ENTRYPOINT []
+# API binds loopback; use host networking on Linux.
 CMD ["node", "dist/main.js"]
