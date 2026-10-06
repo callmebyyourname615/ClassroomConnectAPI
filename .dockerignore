@@ -1,0 +1,29 @@
+# Secrets and developer configuration
+**/.env
+**/.env.*
+**/.npmrc
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/id_ed25519*
+**/secrets
+# Local dependencies, output, mutable data and backups
+**/node_modules
+**/dist
+**/coverage
+**/*.tsbuildinfo
+**/uploads
+**/logs
+**/*.log
+**/backups
+**/*.dump
+**/*.backup
+**/*.sql
+**/.git
+**/.github
+**/.DS_Store
+**/.idea
+**/.vscode
+# Lockfiles intentionally remain in the build context.
