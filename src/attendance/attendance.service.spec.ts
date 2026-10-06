@@ -3,6 +3,7 @@ import { AttendanceService } from './attendance.service';
 describe('AttendanceService list scope', () => {
   it('applies the branch filter directly to the attendance query', async () => {
     const queryBuilder = {
+      innerJoinAndSelect: jest.fn().mockReturnThis(),
       leftJoinAndSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
