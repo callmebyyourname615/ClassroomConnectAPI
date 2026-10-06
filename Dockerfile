@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Override NODE_IMAGE with a tested tag@sha256:digest in CI for immutable releases.
-ARG NODE_IMAGE=node:24-bookworm-slim
+ARG NODE_IMAGE=node:24-trixie-slim
 
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
@@ -26,7 +26,6 @@ COPY --from=build /app/dist ./dist
 COPY package.json ./
 RUN apt-get update \
     && apt-get install -y --no-install-recommends --only-upgrade perl-base \
-    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
     && mkdir -p uploads logs \
