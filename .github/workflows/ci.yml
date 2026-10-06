@@ -51,6 +51,7 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
+          skip-dirs: node_modules,dist
           scanners: secret,misconfig
           severity: HIGH,CRITICAL
           exit-code: '1'
