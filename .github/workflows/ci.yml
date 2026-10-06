@@ -40,6 +40,9 @@ jobs:
       - name: Unit tests
         run: npm test -- --runInBand
 
+      - name: Test API deployment and recovery
+        run: python3 scripts/deploy/test_deployment.py
+
       - name: Compile API and migrations
         run: |
           npm run build
@@ -59,6 +62,8 @@ jobs:
 
   image:
     needs: test
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:
@@ -138,6 +143,12 @@ jobs:
           trivyignores: ''
           timeout: 10m
 
+      - name: Smoke test the exact published digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: bash scripts/docker-smoke.sh "${IMAGE}@${DIGEST}"
+
       - name: Record verified release
         if: github.event_name != 'pull_request'
         env:
@@ -145,3 +156,44 @@ jobs:
         run: |
           printf 'Verified API image: `%s@%s`\n' \
             "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: image
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.API_DEPLOY_ENABLED == 'true'
+    environment: api-production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Configure the pinned API SSH identity
+        env:
+          DEPLOY_KEY: ${{ secrets.API_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.API_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          test -n "$KNOWN_HOSTS"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/api_deploy"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/api_deploy" "$HOME/.ssh/known_hosts"
+      - name: Back up, migrate and deploy the verified API to both schools
+        env:
+          DIGEST: ${{ needs.image.outputs.digest }}
+          REVISION: ${{ github.sha }}
+          DEPLOY_HOST: ${{ vars.API_DEPLOY_HOST }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" == "201.18.216.94" ]]
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf '%s' "$REGISTRY_TOKEN" |
+            ssh -T -i "$HOME/.ssh/api_deploy" \
+              -o BatchMode=yes -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+              "api-deploy@$DEPLOY_HOST" \
+              "deploy ${IMAGE}@${DIGEST} ${REVISION} ${REGISTRY_USER}"
+          printf 'Deployed API `%s@%s` to SVTN and AIMS.\n' "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
