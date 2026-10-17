@@ -195,6 +195,57 @@ export class NotificationsService implements OnModuleInit {
     );
   }
 
+  // The parent's inbox is scoped by the authenticated JWT, never a client parent ID.
+  async findParentInbox(parentId: string) {
+    const rows = await this.repo.find({
+      where: { parent_id: parentId, is_deleted: false },
+      relations: ['branch', 'student'],
+      order: { created_at: 'DESC', id: 'DESC' },
+    });
+    return rows.map(({ branch, student, ...notification }) => {
+      const studentNames = student
+        ? {
+            la: [student.first_name_lao, student.last_name_lao]
+              .filter(Boolean)
+              .join(' ')
+              .trim(),
+            en:
+              [student.first_name_eng, student.last_name_eng]
+                .filter(Boolean)
+                .join(' ')
+                .trim() || null,
+          }
+        : null;
+      return {
+        ...notification,
+        ...(studentNames?.la || studentNames?.en
+          ? {
+              metadata: {
+                ...notification.metadata,
+                studentNameTranslations: studentNames,
+              },
+            }
+          : {}),
+        sender: branch?.name?.trim() || null,
+        ...(branch?.name_translations
+          ? { sender_translations: branch.name_translations }
+          : {}),
+      };
+    });
+  }
+
+  async setParentRead(id: string, parentId: string, seen: boolean) {
+    const notification = await this.repo.findOne({
+      where: { id, parent_id: parentId, is_deleted: false },
+    });
+    if (!notification) throw new NotFoundException('Notification not found');
+    notification.seen = seen ? 1 : 0;
+    if (seen) notification.clicked = 1;
+    const saved = await this.repo.save(notification);
+    await this.clearNotificationCache(saved);
+    return saved;
+  }
+
   // ================= MARK SEEN =================
   async markSeen(id: string) {
     const data = await this.findOneUncached(id);

@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, In, Repository } from 'typeorm';
+import { Brackets, EntityManager, In, Repository } from 'typeorm';
 import { File } from '../file/files.entity';
 import { Admin } from '../admins/admin.entity';
 import { Parent } from '../parents/parent.entity';
@@ -20,6 +20,8 @@ import {
   ToggleGalleryLikeDto,
   UpdateGalleryPostDto,
 } from './dto/gallery.dto';
+import { notifyGallery } from './gallery-notification';
+import { Notification } from '../notifications/notification.entity';
 import { CacheService } from '../common/cache.service';
 
 @Injectable()
@@ -190,63 +192,75 @@ export class GalleryService {
       author_type: dto.author_type,
       published_at: dto.status === 'published' ? new Date() : undefined,
     });
-    const saved = await this.posts.save(post);
-    await this.replacePhotos(saved.id, dto.photo_file_ids ?? []);
-    await this.replaceTags(saved.id, dto.tagged_student_ids ?? []);
+    const saved = await this.posts.manager.transaction(async (manager) => {
+      const saved = await manager.save(GalleryPost, post);
+      await this.replacePhotos(saved.id, dto.photo_file_ids ?? [], manager);
+      await this.replaceTags(saved.id, dto.tagged_student_ids ?? [], manager);
+      await notifyGallery(manager, saved);
+      return saved;
+    });
     await this.clearGalleryCache(saved.id);
     return this.findOne(saved.id);
   }
 
   async update(id: string, dto: UpdateGalleryPostDto) {
-    const post = await this.requirePost(id);
-    const nextStatus = dto.status ?? post.status;
-    const hasPhotoFileIds = dto.photo_file_ids !== undefined;
-    const hasTaggedStudentIds = dto.tagged_student_ids !== undefined;
-    if (nextStatus === 'published') {
-      const [existingPhotos, existingTags] = await Promise.all([
-        hasPhotoFileIds
-          ? Promise.resolve([])
-          : this.photos.find({
-              where: { gallery_id: id },
-              select: ['file_id'],
-            }),
-        hasTaggedStudentIds
-          ? Promise.resolve([])
-          : this.tags.find({
-              where: { gallery_id: id },
-              select: ['student_id'],
-            }),
-      ]);
-      await this.assertPublishable({
-        title: dto.title ?? post.title,
-        description: dto.description ?? post.description,
-        category: dto.category ?? post.category,
-        visibility: dto.visibility ?? post.visibility,
-        photoFileIds:
-          dto.photo_file_ids ??
-          existingPhotos
-            .map((photo) => photo.file_id)
-            .filter((id): id is string => Boolean(id)),
-        taggedStudentIds:
-          dto.tagged_student_ids ?? existingTags.map((tag) => tag.student_id),
+    await this.posts.manager.transaction(async (manager) => {
+      const post = await manager.findOne(GalleryPost, {
+        where: { id },
+        lock: { mode: 'pessimistic_write' },
       });
-    }
-    Object.assign(
-      post,
-      Object.fromEntries(
-        Object.entries(dto).filter(
-          ([key, value]) =>
-            value !== undefined &&
-            !['photo_file_ids', 'tagged_student_ids'].includes(key),
+      if (!post) throw new NotFoundException('Gallery post not found');
+      const nextStatus = dto.status ?? post.status;
+      const hasPhotoFileIds = dto.photo_file_ids !== undefined;
+      const hasTaggedStudentIds = dto.tagged_student_ids !== undefined;
+      if (nextStatus === 'published') {
+        const [existingPhotos, existingTags] = await Promise.all([
+          hasPhotoFileIds
+            ? Promise.resolve([])
+            : this.photos.find({
+                where: { gallery_id: id },
+                select: ['file_id'],
+              }),
+          hasTaggedStudentIds
+            ? Promise.resolve([])
+            : this.tags.find({
+                where: { gallery_id: id },
+                select: ['student_id'],
+              }),
+        ]);
+        await this.assertPublishable({
+          title: dto.title ?? post.title,
+          description: dto.description ?? post.description,
+          category: dto.category ?? post.category,
+          visibility: dto.visibility ?? post.visibility,
+          photoFileIds:
+            dto.photo_file_ids ??
+            existingPhotos
+              .map((photo) => photo.file_id)
+              .filter((id): id is string => Boolean(id)),
+          taggedStudentIds:
+            dto.tagged_student_ids ?? existingTags.map((tag) => tag.student_id),
+        });
+      }
+      Object.assign(
+        post,
+        Object.fromEntries(
+          Object.entries(dto).filter(
+            ([key, value]) =>
+              value !== undefined &&
+              !['photo_file_ids', 'tagged_student_ids'].includes(key),
+          ),
         ),
-      ),
-    );
-    if (dto.status === 'published' && !post.published_at)
-      post.published_at = new Date();
-    await this.posts.save(post);
-    if (hasPhotoFileIds) await this.replacePhotos(id, dto.photo_file_ids ?? []);
-    if (hasTaggedStudentIds)
-      await this.replaceTags(id, dto.tagged_student_ids ?? []);
+      );
+      if (dto.status === 'published' && !post.published_at)
+        post.published_at = new Date();
+      await manager.save(GalleryPost, post);
+      if (hasPhotoFileIds)
+        await this.replacePhotos(id, dto.photo_file_ids ?? [], manager);
+      if (hasTaggedStudentIds)
+        await this.replaceTags(id, dto.tagged_student_ids ?? [], manager);
+      await notifyGallery(manager, post);
+    });
     await this.clearGalleryCache(id);
     return this.findOne(id);
   }
@@ -267,6 +281,9 @@ export class GalleryService {
       this.comments.delete({ gallery_id: id }),
     ]);
     await this.posts.delete(id);
+    await this.posts.manager
+      .getRepository(Notification)
+      .update({ module_id: id, module_type: 'GALLERY' }, { is_deleted: true });
     await this.clearGalleryCache(id);
     return { message: 'Gallery post deleted' };
   }
@@ -346,18 +363,24 @@ export class GalleryService {
     return (await this.withCommentAuthorDetails([comment]))[0];
   }
 
-  private async replacePhotos(galleryId: string, fileIds: string[]) {
-    await this.photos.delete({ gallery_id: galleryId });
+  private async replacePhotos(
+    galleryId: string,
+    fileIds: string[],
+    manager?: EntityManager,
+  ) {
+    const photos = manager ? manager.getRepository(GalleryPhoto) : this.photos;
+    const filesRepo = manager ? manager.getRepository(File) : this.files;
+    await photos.delete({ gallery_id: galleryId });
     if (!fileIds.length) return;
-    const files = await this.files.find({
+    const files = await filesRepo.find({
       where: { id: In(fileIds), is_deleted: false },
     });
     const byId = new Map(files.map((file) => [file.id, file]));
-    await this.photos.save(
+    await photos.save(
       fileIds
         .filter((id) => byId.has(id))
         .map((id, index) =>
-          this.photos.create({
+          photos.create({
             gallery_id: galleryId,
             file_id: id,
             file_path: byId.get(id)!.file_path,
@@ -421,16 +444,22 @@ export class GalleryService {
       );
   }
 
-  private async replaceTags(galleryId: string, studentIds: string[]) {
-    await this.tags.delete({ gallery_id: galleryId });
+  private async replaceTags(
+    galleryId: string,
+    studentIds: string[],
+    manager?: EntityManager,
+  ) {
+    const tags = manager ? manager.getRepository(GalleryStudentTag) : this.tags;
+    const students = manager ? manager.getRepository(Student) : this.students;
+    await tags.delete({ gallery_id: galleryId });
     if (!studentIds.length) return;
-    const valid = await this.students.find({
+    const valid = await students.find({
       where: { id: In(studentIds) },
       select: ['id'],
     });
-    await this.tags.save(
+    await tags.save(
       valid.map((student) =>
-        this.tags.create({ gallery_id: galleryId, student_id: student.id }),
+        tags.create({ gallery_id: galleryId, student_id: student.id }),
       ),
     );
   }

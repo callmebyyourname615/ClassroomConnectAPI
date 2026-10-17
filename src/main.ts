@@ -110,7 +110,7 @@ async function bootstrap() {
 
   const port = Number(config.get<string>('PORT') ?? 3000);
 
-  await app.listen(port, '127.0.0.1');
+  await app.listen(port, config.get<string>('LISTEN_HOST') ?? '127.0.0.1');
   logger.log(`Server running at http://localhost:${port}${prefix}`);
 }
 

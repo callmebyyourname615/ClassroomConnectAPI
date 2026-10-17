@@ -30,6 +30,9 @@ export class Class {
   @Column()
   name: string;
 
+  @Column({ type: 'jsonb', nullable: true })
+  name_translations: { la: string; en: string | null } | null;
+
   @Column({ type: 'uuid', name: 'homeroom_teacher_id', nullable: true })
   homeroom_teacher_id: string | null;
 

@@ -4,7 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 import { TeacherHomework } from './teacher-homework.entity';
 import { TeacherHomeworkItem } from './teacher-homework-item.entity';
 import { CreateTeacherHomeworkDto } from './dto/create-teacher-homework.dto';
@@ -15,6 +15,7 @@ import { TeacherHomeworkStatus } from './teacher-homework-status.enum';
 import { TeachLearning } from '../teach_learning/teach-learning.entity';
 import { Teaching } from '../teachings/teaching.entity';
 import { Class } from '../classes/class.entity'; // ✅ new
+import { notifyHomework } from './homework-notification';
 
 @Injectable()
 export class TeacherHomeworkService {
@@ -41,7 +42,7 @@ export class TeacherHomeworkService {
   ): Promise<TeacherHomework> {
     const teaching = await this.teachingRepo.findOne({
       where: { id: createDto.teachingId },
-      relations: ['branch'],
+      relations: ['branch', 'subject', 'subject.class', 'subject.subjectType'],
     });
     if (!teaching) throw new BadRequestException('teachingId not found');
 
@@ -54,8 +55,9 @@ export class TeacherHomeworkService {
 
     // ✅ Resolve class if provided
     let cls: Class | null = null;
-    if (createDto.classId) {
-      cls = await this.classRepo.findOne({ where: { id: createDto.classId } });
+    const classId = createDto.classId || teaching.subject?.class_id;
+    if (classId) {
+      cls = await this.classRepo.findOne({ where: { id: classId } });
       if (!cls) throw new BadRequestException('classId not found');
     }
 
@@ -98,7 +100,16 @@ export class TeacherHomeworkService {
       items,
     });
 
-    const saved = await this.teacherHomeworkRepo.save(homework);
+    const saved = await this.teacherHomeworkRepo.manager.transaction(
+      async (manager) => {
+        const saved = await manager
+          .getRepository(TeacherHomework)
+          .save(homework);
+        if (saved.status === TeacherHomeworkStatus.SENT)
+          await notifyHomework(manager, saved);
+        return saved;
+      },
+    );
     return this.findOne(saved.id);
   }
 
@@ -174,56 +185,63 @@ export class TeacherHomeworkService {
     id: string,
     updateDto: UpdateTeacherHomeworkDto,
   ): Promise<TeacherHomework> {
-    const existing = await this.findOne(id);
+    return this.teacherHomeworkRepo.manager.transaction(async (manager) => {
+      const existing = await this.lockedHomework(manager, id);
+      const wasSent = existing.status === TeacherHomeworkStatus.SENT;
 
-    if (updateDto.teachLearningId) {
-      const teachLearning = await this.teachLearningRepo.findOne({
-        where: { id: updateDto.teachLearningId },
-        relations: ['admin', 'subject'],
-      });
-      if (!teachLearning)
-        throw new BadRequestException('teachLearningId not found');
-      existing.teachLearningId = updateDto.teachLearningId;
-      existing.teachLearning = teachLearning;
-    }
-
-    // ✅ Update class on homework
-    if (updateDto.classId !== undefined) {
-      if (updateDto.classId === null) {
-        existing.classId = null;
-        existing.class = null;
-      } else {
-        const cls = await this.classRepo.findOne({
-          where: { id: updateDto.classId },
+      if (updateDto.teachLearningId) {
+        const teachLearning = await this.teachLearningRepo.findOne({
+          where: { id: updateDto.teachLearningId },
+          relations: ['admin', 'subject'],
         });
-        if (!cls) throw new BadRequestException('classId not found');
-        existing.classId = cls.id;
-        existing.class = cls;
+        if (!teachLearning)
+          throw new BadRequestException('teachLearningId not found');
+        existing.teachLearningId = updateDto.teachLearningId;
+        existing.teachLearning = teachLearning;
       }
-    }
 
-    if (updateDto.title !== undefined) existing.title = updateDto.title;
-    if (updateDto.overallInstruction !== undefined)
-      existing.overallInstruction = updateDto.overallInstruction ?? null;
-    if (updateDto.dueDate !== undefined)
-      existing.dueDate = updateDto.dueDate ? new Date(updateDto.dueDate) : null;
-
-    if (updateDto.status !== undefined) {
-      existing.status = updateDto.status;
-      if (updateDto.status === TeacherHomeworkStatus.SENT) {
-        this.validateCanPublish(existing.items);
-        existing.sentAt = existing.sentAt ?? new Date();
+      // ✅ Update class on homework
+      if (updateDto.classId !== undefined) {
+        if (updateDto.classId === null) {
+          existing.classId = null;
+          existing.class = null;
+        } else {
+          const cls = await this.classRepo.findOne({
+            where: { id: updateDto.classId },
+          });
+          if (!cls) throw new BadRequestException('classId not found');
+          existing.classId = cls.id;
+          existing.class = cls;
+        }
       }
-      if (updateDto.status === TeacherHomeworkStatus.DRAFT) {
-        existing.sentAt = null;
+
+      if (updateDto.title !== undefined) existing.title = updateDto.title;
+      if (updateDto.overallInstruction !== undefined)
+        existing.overallInstruction = updateDto.overallInstruction ?? null;
+      if (updateDto.dueDate !== undefined)
+        existing.dueDate = updateDto.dueDate
+          ? new Date(updateDto.dueDate)
+          : null;
+
+      if (updateDto.status !== undefined) {
+        existing.status = updateDto.status;
+        if (updateDto.status === TeacherHomeworkStatus.SENT) {
+          this.validateCanPublish(existing.items);
+          existing.sentAt = existing.sentAt ?? new Date();
+        }
+        if (updateDto.status === TeacherHomeworkStatus.DRAFT) {
+          existing.sentAt = null;
+        }
       }
-    }
 
-    this.validateAllItemsHaveScore(existing.items);
-    existing.totalScore = this.validateTotalScore(existing.items);
+      this.validateAllItemsHaveScore(existing.items);
+      existing.totalScore = this.validateTotalScore(existing.items);
 
-    const saved = await this.teacherHomeworkRepo.save(existing);
-    return this.findOne(saved.id);
+      const saved = await manager.getRepository(TeacherHomework).save(existing);
+      if (!wasSent && saved.status === TeacherHomeworkStatus.SENT)
+        await notifyHomework(manager, saved);
+      return saved;
+    });
   }
 
   async remove(id: string): Promise<{ message: string }> {
@@ -233,13 +251,31 @@ export class TeacherHomeworkService {
   }
 
   async publish(id: string): Promise<TeacherHomework> {
-    const homework = await this.findOne(id);
-    this.validateCanPublish(homework.items);
-    homework.status = TeacherHomeworkStatus.SENT;
-    homework.sentAt = new Date();
-    homework.totalScore = this.validateTotalScore(homework.items);
-    await this.teacherHomeworkRepo.save(homework);
-    return this.findOne(id);
+    return this.teacherHomeworkRepo.manager.transaction(async (manager) => {
+      const homework = await this.lockedHomework(manager, id);
+      if (homework.status === TeacherHomeworkStatus.SENT) return homework;
+      this.validateCanPublish(homework.items);
+      homework.status = TeacherHomeworkStatus.SENT;
+      homework.sentAt = homework.sentAt ?? new Date();
+      homework.totalScore = this.validateTotalScore(homework.items);
+      const saved = await manager.getRepository(TeacherHomework).save(homework);
+      await notifyHomework(manager, saved);
+      return saved;
+    });
+  }
+
+  private async lockedHomework(manager: EntityManager, id: string) {
+    await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+      `homework:${id}`,
+    ]);
+    const homework = await manager.getRepository(TeacherHomework).findOne({
+      where: { id },
+      relations: ['teaching', 'branch', 'class', 'items', 'items.class'],
+      order: { items: { sortOrder: 'ASC' } },
+    });
+    if (!homework)
+      throw new NotFoundException(`Teacher homework with ID ${id} not found`);
+    return homework;
   }
 
   async createItem(

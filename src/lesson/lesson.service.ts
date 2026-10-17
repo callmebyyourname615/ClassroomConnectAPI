@@ -45,7 +45,12 @@ export class LessonService {
     private readonly cache: CacheService,
   ) {}
 
-  private readonly RELATIONS = ['subjectType', 'yearLevel', 'curriculums'];
+  private readonly RELATIONS = [
+    'subjectType',
+    'yearLevel',
+    'yearLevel.level',
+    'curriculums',
+  ];
 
   private lessonUploadPath(file?: Express.Multer.File): string | null {
     if (!file?.filename) return null;
@@ -178,6 +183,7 @@ export class LessonService {
         .createQueryBuilder('lesson')
         .leftJoinAndSelect('lesson.subjectType', 'subjectType')
         .leftJoinAndSelect('lesson.yearLevel', 'yearLevel')
+        .leftJoinAndSelect('yearLevel.level', 'level')
         .leftJoinAndSelect('lesson.curriculums', 'curriculum');
 
       if (subjectTypeId) {

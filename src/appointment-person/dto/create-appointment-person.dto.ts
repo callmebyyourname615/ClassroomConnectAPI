@@ -60,7 +60,6 @@ export class CreateAppointmentPersonDto {
   status?: string = 'Pending';
 
   @IsString()
-  @IsNotEmpty()
   notes: string;
 
   @IsOptional()

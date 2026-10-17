@@ -24,6 +24,9 @@ export class YearLevel {
   @Column()
   name: string;
 
+  @Column({ type: 'jsonb', nullable: true })
+  name_translations: { la: string; en: string | null } | null;
+
   @Column({ default: true })
   is_active: boolean;
 

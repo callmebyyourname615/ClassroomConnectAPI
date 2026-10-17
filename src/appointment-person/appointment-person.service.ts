@@ -14,6 +14,7 @@ import { CheckConflictsDto } from './dto/check-conflicts.dto';
 import { AppointmentParticipant } from '../appointment/dto/appointment-participant.entity';
 import { CreateAppointmentPersonDto } from './dto/create-appointment-person.dto';
 import { UpdateAppointmentPersonDto } from './dto/update-appointment-person.dto';
+import { notifyAppointment } from '../appointment/appointment-notification';
 import { Appointment } from '../appointment/appointment.entity';
 import { Branch } from '../branches/branch.entity';
 import { AcademicYear } from '../academic_years/academic-year.entity';
@@ -133,7 +134,11 @@ export class AppointmentPersonService {
       is_deleted: false,
     });
 
-    return this.repo.save(ap);
+    return this.repo.manager.transaction(async (manager) => {
+      const saved = await manager.save(AppointmentParticipant, ap);
+      await notifyAppointment(manager, appointment, 'created', [saved]);
+      return saved;
+    });
   }
 
   async findAll() {
@@ -214,13 +219,37 @@ export class AppointmentPersonService {
       ];
     }
 
-    return this.repo.save(existing);
+    return this.repo.manager.transaction(async (manager) => {
+      const saved = await manager.save(AppointmentParticipant, existing);
+      if (statusChanged && ['ACCEPTED', 'DECLINED'].includes(nextStatus)) {
+        const appointment = await manager.findOne(Appointment, {
+          where: { id: saved.appointment_id! },
+        });
+        if (appointment)
+          await notifyAppointment(
+            manager,
+            appointment,
+            nextStatus === 'ACCEPTED' ? 'accepted' : 'declined',
+            [saved],
+            saved,
+          );
+      }
+      return saved;
+    });
   }
 
   async softDelete(id: string) {
     const ap = await this.findOne(id);
-    ap.is_deleted = true;
-    return this.repo.save(ap);
+    return this.repo.manager.transaction(async (manager) => {
+      const appointment = await manager.findOne(Appointment, {
+        where: { id: ap.appointment_id! },
+      });
+      if (appointment && ap.status !== ParticipantStatus.DECLINED)
+        await notifyAppointment(manager, appointment, 'declined', [ap], ap);
+      ap.is_deleted = true;
+      ap.is_active = false;
+      return manager.save(AppointmentParticipant, ap);
+    });
   }
 
   async checkConflicts(dto: CheckConflictsDto) {

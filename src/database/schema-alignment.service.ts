@@ -1,5 +1,7 @@
 ﻿import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { alignBilingualSubjectTypes, alignBilingualNameTable } from './bilingual-subject-types';
+import { alignBilingualSubjectEvaluations } from './bilingual-subject-evaluations';
 
 @Injectable()
 export class SchemaAlignmentService implements OnModuleInit {
@@ -20,6 +22,12 @@ export class SchemaAlignmentService implements OnModuleInit {
     this.alignmentPromise = (async () => {
       try {
         this.logger.log('Starting automated database schema alignment...');
+        await alignBilingualSubjectTypes(this.dataSource);
+        await alignBilingualNameTable(this.dataSource, 'levels');
+        await alignBilingualNameTable(this.dataSource, 'year_levels');
+        await alignBilingualNameTable(this.dataSource, 'classes');
+        await alignBilingualNameTable(this.dataSource, 'branches');
+        await alignBilingualSubjectEvaluations(this.dataSource);
 
         // 1. Students table alignment
         await this.dataSource.query(`

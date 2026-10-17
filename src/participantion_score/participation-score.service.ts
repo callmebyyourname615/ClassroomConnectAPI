@@ -1,6 +1,11 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
+import { Notification } from '../notifications/notification.entity';
 import { ParticipationScore } from './participation-score.entity';
 import { CreateParticipationScoreDto } from './dto/create-participation-score.dto';
 import { UpdateParticipationScoreDto } from './dto/update-participation-score.dto';
@@ -39,33 +44,210 @@ export class ParticipationScoreService {
     return String(date).slice(0, 10);
   }
 
-  private requireScores(dto: CreateParticipationScoreDto | UpdateParticipationScoreDto) {
+  private requireScores(
+    dto: CreateParticipationScoreDto | UpdateParticipationScoreDto,
+  ) {
     if (!Array.isArray(dto.scores) || dto.scores.length === 0) {
       throw new BadRequestException('No participation scores provided');
     }
     return dto.scores;
   }
 
-  /* ================= CREATE ================= */
-  async create(dto: CreateParticipationScoreDto) {
-    const scores = this.requireScores(dto);
-
-    const entity = this.repo.create({
-      branchId: dto.branchId,
-      academicYearId: dto.academicYearId,
-      levelId: dto.levelId,       // ← added
-      classId: dto.classId,
-      addedBy: dto.addedBy,
-      date: dto.date ? this.normalizeDate(dto.date) : null,
-      scores: scores.map((s) => ({
-        studentId: s.studentId,
-        participationId: s.participationId,
-        participationName: s.name || 'Unknown Activity',
-        score: s.score,
-      })),
+  private async saveDaily(
+    dto: CreateParticipationScoreDto | UpdateParticipationScoreDto,
+    id?: string,
+    merge = false,
+  ) {
+    return this.repo.manager.transaction(async (manager) => {
+      const repository = manager.getRepository(ParticipationScore);
+      let prior = id ? await repository.findOne({ where: { id } }) : null;
+      if (id && !prior)
+        throw new NotFoundException('Participation score not found');
+      const scope = {
+        branchId: dto.branchId ?? prior?.branchId,
+        academicYearId: dto.academicYearId ?? prior?.academicYearId,
+        levelId: dto.levelId ?? prior?.levelId,
+        classId: dto.classId ?? prior?.classId,
+        date: dto.date
+          ? this.normalizeDate(dto.date)
+          : prior?.date ||
+            new Intl.DateTimeFormat('en-CA', {
+              timeZone: 'Asia/Vientiane',
+            }).format(new Date()),
+      };
+      await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        `daily-evaluation:${scope.branchId}:${scope.academicYearId}:${scope.levelId}:${scope.classId}:${scope.date}`,
+      ]);
+      prior = await repository.findOne({ where: id ? { id } : scope });
+      if (id && !prior)
+        throw new NotFoundException('Participation score not found');
+      const oldScores = (prior?.scores || []).map((item) => ({ ...item }));
+      const sameDay =
+        prior?.date === scope.date &&
+        (prior?.classId ?? null) === (scope.classId ?? null) &&
+        (prior?.academicYearId ?? null) === (scope.academicYearId ?? null) &&
+        (prior?.levelId ?? null) === (scope.levelId ?? null) &&
+        (prior?.branchId ?? null) === (scope.branchId ?? null);
+      let nextScores = merge
+        ? oldScores.map((item) => ({ ...item }))
+        : oldScores;
+      if (dto.scores !== undefined || !prior) {
+        const input = this.requireScores(dto);
+        const definitions = await manager
+          .getRepository(ParticipationList)
+          .findBy({
+            id: In([...new Set(input.map((item) => item.participationId))]),
+          });
+        const byId = new Map(definitions.map((item) => [item.id, item]));
+        if (!merge) nextScores = [];
+        for (const item of input) {
+          const definition = byId.get(item.participationId);
+          if (!definition)
+            throw new BadRequestException('Unknown daily assessment criterion');
+          if (!Number.isFinite(item.score) || item.score < 0)
+            throw new BadRequestException('Invalid daily assessment score');
+          const maximum =
+            definition.score == null || definition.score === ''
+              ? null
+              : Number(definition.score);
+          if (
+            maximum != null &&
+            Number.isFinite(maximum) &&
+            item.score > maximum
+          )
+            throw new BadRequestException(
+              'Daily assessment score exceeds maximum',
+            );
+          const entry = {
+            studentId: item.studentId,
+            participationId: item.participationId,
+            participationName: definition.name,
+            score: item.score,
+          };
+          const index = nextScores.findIndex(
+            (old) =>
+              old.studentId === item.studentId &&
+              old.participationId === item.participationId,
+          );
+          if (index < 0) nextScores.push(entry);
+          else nextScores[index] = entry;
+        }
+      }
+      const changedStudents = new Set(
+        nextScores
+          .filter(
+            (item) =>
+              !sameDay ||
+              !oldScores.some(
+                (old) =>
+                  old.studentId === item.studentId &&
+                  old.participationId === item.participationId &&
+                  Number(old.score) === Number(item.score),
+              ),
+          )
+          .map((item) => item.studentId),
+      );
+      const saved = await repository.save(
+        repository.create({
+          ...prior,
+          ...scope,
+          addedBy: dto.addedBy ?? prior?.addedBy,
+          scores: nextScores,
+        }),
+      );
+      if (changedStudents.size)
+        await this.notifyDaily(manager, saved, changedStudents);
+      return saved;
     });
+  }
 
-    return this.repo.save(entity);
+  private async notifyDaily(
+    manager: EntityManager,
+    record: ParticipationScore,
+    changed: Set<string>,
+  ) {
+    const definitions = await manager.getRepository(ParticipationList).findBy({
+      id: In([...new Set(record.scores.map((item) => item.participationId))]),
+    });
+    const byId = new Map(definitions.map((item) => [item.id, item]));
+    const students = await manager
+      .getRepository(Student)
+      .find({ where: { id: In([...changed]) }, relations: ['parents'] });
+    if (students.length !== changed.size)
+      throw new BadRequestException('Unknown student');
+    const notifications = manager.getRepository(Notification);
+    for (const student of students) {
+      const items = record.scores
+        .filter((item) => item.studentId === student.id)
+        .map((item) => {
+          const raw = byId.get(item.participationId)?.score;
+          const maximum = raw == null || raw === '' ? null : Number(raw);
+          return {
+            criterionId: item.participationId,
+            criterionName:
+              byId.get(item.participationId)?.name || item.participationName,
+            score: item.score,
+            maxScore:
+              maximum != null && Number.isFinite(maximum) ? maximum : null,
+          };
+        });
+      const studentName = [
+        student.first_name_lao || student.first_name_eng,
+        student.last_name_lao || student.last_name_eng,
+      ]
+        .filter(Boolean)
+        .join(' ');
+      const score = items.reduce((sum, item) => sum + Number(item.score), 0);
+      const maxScore = items.every((item) => item.maxScore != null)
+        ? items.reduce((sum, item) => sum + Number(item.maxScore), 0)
+        : null;
+      const parents = [
+        ...new Set(
+          (student.parents || [])
+            .filter((parent) => parent.isActive !== false)
+            .map((parent) => parent.id),
+        ),
+      ];
+      if (!parents.length) continue;
+      await notifications.save(
+        parents.map((parentId) =>
+          notifications.create({
+            parent_id: parentId,
+            student_id: student.id,
+            branch_id: record.branchId,
+            academic_year_id: record.academicYearId,
+            module_type: 'DAILY_EVALUATION',
+            module_id: record.id,
+            seen: 0,
+            clicked: 0,
+            title: 'ຜົນການປະເມີນປະຈຳວັນ',
+            description: `${studentName} · ${record.date}`.slice(0, 255),
+            message: [
+              studentName,
+              record.date,
+              ...items.map(
+                (item) =>
+                  `${item.criterionName}: ${item.score}${item.maxScore == null ? '' : ` / ${item.maxScore}`}`,
+              ),
+            ].join('\n'),
+            metadata: {
+              type: 'daily_evaluation',
+              studentId: student.id,
+              studentName,
+              assessmentDate: record.date,
+              participationScoreId: record.id,
+              score,
+              maxScore,
+              items,
+            },
+          }),
+        ),
+      );
+    }
+  }
+
+  async create(dto: CreateParticipationScoreDto) {
+    return this.saveDaily(dto);
   }
 
   /* ================= GET ALL ================= */
@@ -82,27 +264,7 @@ export class ParticipationScoreService {
 
   /* ================= UPDATE ================= */
   async update(id: string, dto: UpdateParticipationScoreDto) {
-    const record = await this.repo.findOne({ where: { id } });
-    if (!record) throw new NotFoundException('Participation score not found');
-
-    if (dto.branchId) record.branchId = dto.branchId;
-    if (dto.academicYearId) record.academicYearId = dto.academicYearId;
-    if (dto.levelId) record.levelId = dto.levelId; // ← added
-    if (dto.classId) record.classId = dto.classId;
-    if (dto.addedBy) record.addedBy = dto.addedBy;
-    if (dto.date) record.date = this.normalizeDate(dto.date);
-
-    if (dto.scores) {
-      const scores = this.requireScores(dto);
-      record.scores = scores.map((s) => ({
-        studentId: s.studentId,
-        participationId: s.participationId,
-        participationName: s.name || 'Unknown Activity',
-        score: s.score,
-      }));
-    }
-
-    return this.repo.save(record);
+    return this.saveDaily(dto, id);
   }
 
   /* ================= DELETE ================= */
@@ -115,71 +277,7 @@ export class ParticipationScoreService {
 
   /* ================= BULK UPSERT ================= */
   async bulkUpsert(dto: CreateParticipationScoreDto) {
-    const scores = this.requireScores(dto);
-    const targetDate = dto.date ? this.normalizeDate(dto.date) : undefined;
-
-    const existing = await this.repo.findOne({
-      where: {
-        branchId: dto.branchId,
-        academicYearId: dto.academicYearId,
-        levelId: dto.levelId, // ← added to uniqueness check
-        classId: dto.classId,
-        date: targetDate,
-      },
-    });
-
-    // load participation names from DB
-    const participationIds = [...new Set(scores.map((s) => s.participationId))];
-    const participations = await this.participationRepo.findByIds(participationIds);
-    const participationMap: Record<string, string> = {};
-    participations.forEach((p) => (participationMap[p.id] = p.name));
-
-    if (existing) {
-      existing.scores = Array.isArray(existing.scores) ? existing.scores : [];
-
-      scores.forEach((s) => {
-        const idx = existing.scores.findIndex(
-          (sc) =>
-            sc.studentId === s.studentId &&
-            sc.participationId === s.participationId,
-        );
-
-        const nameFromDB =
-          participationMap[s.participationId] || 'Unknown Activity';
-
-        if (idx >= 0) {
-          existing.scores[idx].score = s.score;
-          existing.scores[idx].participationName = nameFromDB;
-        } else {
-          existing.scores.push({
-            studentId: s.studentId,
-            participationId: s.participationId,
-            participationName: nameFromDB,
-            score: s.score,
-          });
-        }
-      });
-
-      return this.repo.save(existing);
-    }
-
-    const entity = this.repo.create({
-      branchId: dto.branchId,
-      academicYearId: dto.academicYearId,
-      levelId: dto.levelId, // ← added
-      classId: dto.classId,
-      addedBy: dto.addedBy,
-      date: targetDate,
-      scores: scores.map((s) => ({
-        studentId: s.studentId,
-        participationId: s.participationId,
-        participationName:
-          participationMap[s.participationId] || 'Unknown Activity',
-        score: s.score,
-      })),
-    });
-
-    return this.repo.save(entity);
+    return this.saveDaily(dto, undefined, true);
   }
 
   /* ================= GET SCORES BY FILTER ================= */

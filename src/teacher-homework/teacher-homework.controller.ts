@@ -13,6 +13,8 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  ForbiddenException,
+  Req,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
@@ -33,6 +35,11 @@ export class TeacherHomeworkController {
   constructor(
     private readonly teacherHomeworkService: TeacherHomeworkService,
   ) {}
+
+  private requireStaff(req: any) {
+    if (!req.user?.sub || req.user.user_type === 'parent')
+      throw new ForbiddenException('Staff account required');
+  }
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
@@ -65,9 +72,11 @@ export class TeacherHomeworkController {
     }),
   )
   async create(
+    @Req() req: any,
     @Body() createDto: CreateTeacherHomeworkDto,
     @UploadedFile() file?: Express.Multer.File,
   ) {
+    this.requireStaff(req);
     return this.teacherHomeworkService.create(createDto, file);
   }
 
@@ -141,7 +150,8 @@ export class TeacherHomeworkController {
   }
 
   @Patch(':id/publish')
-  publish(@Param('id', ParseUUIDPipe) id: string) {
+  publish(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
+    this.requireStaff(req);
     return this.teacherHomeworkService.publish(id);
   }
 
@@ -153,8 +163,10 @@ export class TeacherHomeworkController {
   @Patch(':id')
   update(
     @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: any,
     @Body() updateDto: UpdateTeacherHomeworkDto,
   ) {
+    this.requireStaff(req);
     return this.teacherHomeworkService.update(id, updateDto);
   }
 

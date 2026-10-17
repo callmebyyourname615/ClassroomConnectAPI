@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 
@@ -11,6 +15,7 @@ import { UpdateBranchDto } from './dto/update-branch.dto';
 import * as fs from 'fs';
 import { AcademicYear } from '../academic_years/academic-year.entity';
 import { CacheService } from '../common/cache.service';
+import { parseBilingualName } from '../common/bilingual-name';
 
 @Injectable()
 export class BranchService {
@@ -83,6 +88,7 @@ export class BranchService {
     dto: CreateBranchDto,
     file?: Express.Multer.File,
   ): Promise<Branch> {
+    const translations = dto.name ? this.translations(dto.name) : null;
     // 1️⃣ parse subjects
     let subjectIds: string[] = [];
     if (dto.subjects) {
@@ -154,6 +160,8 @@ export class BranchService {
           : (dto.address ?? {});
     }
 
+    branch.name_translations = translations;
+
     // 5️⃣ assign subjects
     if (subjectIds.length > 0) {
       const subjects = await this.subjectRepo.find({
@@ -218,6 +226,7 @@ export class BranchService {
     dto: UpdateBranchDto,
     file?: Express.Multer.File,
   ): Promise<Branch> {
+    const translations = dto.name ? this.translations(dto.name) : undefined;
     const branch = await this.findOneUncached(id);
 
     // ✅ Only assign safe fields, not subjects or address directly
@@ -226,7 +235,10 @@ export class BranchService {
     if (dto.branch_map) branch.branch_map = dto.branch_map;
     if (dto.branch_fb) branch.branch_fb = dto.branch_fb;
     if (dto.branch_website) branch.branch_website = dto.branch_website;
-    if (dto.name) branch.name = dto.name;
+    if (dto.name) {
+      branch.name = dto.name;
+      branch.name_translations = translations!;
+    }
     if (dto.contact) branch.contact = dto.contact;
     if (dto.phone) branch.phone = dto.phone;
 
@@ -291,5 +303,18 @@ export class BranchService {
   private async clearBranchCache(id?: string): Promise<void> {
     await this.cache.del('branches:all');
     if (id) await this.cache.del(`branches:${id}`);
+  }
+
+  private translations(name: string) {
+    if (typeof name !== 'string' || name.length > 255) {
+      throw new BadRequestException(
+        'Name must be a string of at most 255 characters',
+      );
+    }
+    try {
+      return parseBilingualName(name);
+    } catch (error) {
+      throw new BadRequestException(error.message);
+    }
   }
 }

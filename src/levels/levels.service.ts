@@ -1,4 +1,9 @@
-import { Injectable, ConflictException } from '@nestjs/common';
+import { parseBilingualName } from '../common/bilingual-name';
+import {
+  Injectable,
+  ConflictException,
+  BadRequestException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Level } from './level.entity';
@@ -15,9 +20,15 @@ export class LevelsService {
   ) {}
 
   async create(dto: CreateLevelDto): Promise<Level> {
-    const level = this.repo.create(dto);
+    const level = this.repo.create({
+      ...dto,
+      name: dto.name.trim(),
+      name_translations: this.translations(dto.name),
+    });
     const saved = await this.repo.save(level);
     await this.cache.del('levels:all');
+    await this.cache.del('year-levels:all');
+    await this.cache.delPattern('lessons:*');
     return saved;
   }
 
@@ -30,8 +41,18 @@ export class LevelsService {
   }
 
   async update(id: string, dto: UpdateLevelDto): Promise<Level | null> {
-    await this.repo.update(id, dto);
+    await this.repo.update(id, {
+      ...dto,
+      ...(dto.name !== undefined
+        ? {
+            name: dto.name.trim(),
+            name_translations: this.translations(dto.name),
+          }
+        : {}),
+    });
     await this.cache.del('levels:all');
+    await this.cache.del('year-levels:all');
+    await this.cache.delPattern('lessons:*');
     return this.findOne(id);
   }
 
@@ -39,6 +60,8 @@ export class LevelsService {
     try {
       await this.repo.delete(id);
       await this.cache.del('levels:all');
+      await this.cache.del('year-levels:all');
+      await this.cache.delPattern('lessons:*');
     } catch (error: any) {
       if (error.code === '23503') {
         throw new ConflictException(
@@ -46,6 +69,13 @@ export class LevelsService {
         );
       }
       throw error;
+    }
+  }
+  private translations(name: string) {
+    try {
+      return parseBilingualName(name);
+    } catch (error) {
+      throw new BadRequestException(error.message);
     }
   }
 }

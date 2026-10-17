@@ -9,6 +9,7 @@ import { Student } from '../students/student.entity';
 import { TaskSubmissionSlot } from '../task-submission/task-submission-slot.entity';
 import { TaskService } from './task.service';
 import { TaskController } from './task.controller';
+import { TaskNotificationService } from './task-notification.service';
 
 @Module({
   imports: [
@@ -22,7 +23,7 @@ import { TaskController } from './task.controller';
     ]),
     FileModule,
   ],
-  providers: [TaskService],
+  providers: [TaskService, TaskNotificationService],
   controllers: [TaskController],
 })
 export class TaskModule {}

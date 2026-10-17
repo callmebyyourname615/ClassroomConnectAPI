@@ -13,6 +13,7 @@ import { Attendance, AttendanceType } from './attendance.entity';
 import { Student } from '../students/student.entity';
 import { AttendanceRule } from './attendance_rules';
 import { CacheService } from '../common/cache.service';
+import { Notification } from '../notifications/notification.entity';
 
 export const ATTENDANCE_TIME_ZONE = 'Asia/Vientiane';
 
@@ -47,6 +48,110 @@ export class AttendanceService {
 
   private readonly attendanceListTtlSeconds = 45;
   private readonly attendanceDetailTtlSeconds = 120;
+
+  private async saveWithNotification(
+    attendance: Attendance,
+    patch?: Partial<Attendance>,
+    scan = false,
+  ) {
+    return this.repo.manager.transaction(async (manager) => {
+      await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        `attendance:${attendance.student_id}:${attendance.attendance_date}`,
+      ]);
+      const repository = manager.getRepository(Attendance);
+      const previous = await repository.findOne({
+        where: {
+          student_id: attendance.student_id,
+          attendance_date: attendance.attendance_date,
+        },
+      });
+      if (scan && previous?.check_in) {
+        throw new ConflictException(
+          'This student has already been checked in today.',
+        );
+      }
+      if (previous && !attendance.id && !scan) {
+        throw new ConflictException(
+          'Attendance already exists for this student and date.',
+        );
+      }
+      if (previous && patch)
+        attendance = repository.create({ ...previous, ...patch });
+      // Compare normalized times: PostgreSQL returns HH:mm:ss even for HH:mm input.
+      const time = (value?: string | null) =>
+        !value ? null : value.length === 5 ? `${value}:00` : value;
+      const snapshot = (row?: Attendance | null) =>
+        row &&
+        JSON.stringify([
+          row.type,
+          time(row.check_in),
+          time(row.check_out),
+          row.reason || null,
+          row.remark || null,
+          row.check_out_remark || null,
+        ]);
+      const changed = snapshot(previous) !== snapshot(attendance);
+      const saved = await repository.save(attendance);
+      if (!changed) return saved;
+      const student = await manager.getRepository(Student).findOne({
+        where: { id: saved.student_id, is_deleted: false },
+        relations: ['parents'],
+      });
+      if (!student) return saved;
+      const recipients = [
+        ...new Set(
+          (student.parents || [])
+            .filter((parent) => parent.isActive !== false)
+            .map((parent) => parent.id),
+        ),
+      ];
+      if (!recipients.length) return saved;
+      const event =
+        saved.check_out && time(saved.check_out) !== time(previous?.check_out)
+          ? 'check_out'
+          : saved.check_in && !previous?.check_in
+            ? 'check_in'
+            : 'updated';
+      const studentName = [
+        student.first_name_lao || student.first_name_eng,
+        student.last_name_lao || student.last_name_eng,
+      ]
+        .filter(Boolean)
+        .join(' ');
+      const metadata = {
+        type: 'attendance',
+        event,
+        attendanceId: saved.id,
+        studentId: student.id,
+        studentName,
+        attendanceDate: saved.attendance_date,
+        status: saved.type,
+        checkIn: saved.check_in || null,
+        checkOut: saved.check_out || null,
+        reason: saved.reason || null,
+        remark: saved.remark || null,
+        checkOutRemark: saved.check_out_remark || null,
+      };
+      const notifications = manager.getRepository(Notification);
+      await notifications.save(
+        recipients.map((parentId) =>
+          notifications.create({
+            parent_id: parentId,
+            student_id: student.id,
+            branch_id: student.branchId || undefined,
+            module_type: 'ATTENDANCE',
+            module_id: saved.id,
+            seen: 0,
+            clicked: 0,
+            title: 'Attendance update',
+            message: `${studentName}\n${saved.attendance_date}: ${saved.type}\nCheck in: ${saved.check_in || '-'}\nCheck out: ${saved.check_out || '-'}`,
+            metadata,
+          }),
+        ),
+      );
+      return saved;
+    });
+  }
 
   // =====================================================
   // QR SCAN (CHECK-IN)
@@ -131,7 +236,15 @@ export class AttendanceService {
       attendance.remark = 'LATE';
     }
 
-    const saved = await this.repo.save(attendance);
+    const saved = await this.saveWithNotification(
+      attendance,
+      {
+        check_in: attendance.check_in,
+        type: attendance.type,
+        remark: attendance.remark,
+      },
+      true,
+    );
     await this.clearAttendanceCache(saved.id);
     return saved;
   }
@@ -188,7 +301,10 @@ export class AttendanceService {
 
     attendance.check_out = now;
 
-    const saved = await this.repo.save(attendance);
+    const saved = await this.saveWithNotification(attendance, {
+      check_out: attendance.check_out,
+      check_out_remark: attendance.check_out_remark,
+    });
     await this.clearAttendanceCache(saved.id);
     return saved;
   }
@@ -203,7 +319,7 @@ export class AttendanceService {
 
     Object.assign(attendance, dto);
 
-    const saved = await this.repo.save(attendance);
+    const saved = await this.saveWithNotification(attendance, dto);
     await this.clearAttendanceCache(saved.id);
     return saved;
   }
@@ -319,7 +435,7 @@ export class AttendanceService {
   // CRUD
   // =====================================================
   async create(dto: Partial<Attendance>) {
-    const saved = await this.repo.save(this.repo.create(dto));
+    const saved = await this.saveWithNotification(this.repo.create(dto));
     await this.clearAttendanceCache(saved.id);
     return saved;
   }
@@ -436,7 +552,7 @@ export class AttendanceService {
   async update(id: string, dto: Partial<Attendance>) {
     const attendance = await this.findOneUncached(id);
     Object.assign(attendance, dto);
-    const saved = await this.repo.save(attendance);
+    const saved = await this.saveWithNotification(attendance, dto);
     await this.clearAttendanceCache(saved.id);
     return saved;
   }

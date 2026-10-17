@@ -34,6 +34,9 @@ export class Branch {
   name: string;
 
   @Column({ type: 'jsonb', nullable: true })
+  name_translations: { la: string; en: string | null } | null;
+
+  @Column({ type: 'jsonb', nullable: true })
   address: Record<string, any>;
 
   @Column({ type: 'text', nullable: true })

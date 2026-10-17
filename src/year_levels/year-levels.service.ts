@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { parseBilingualName } from '../common/bilingual-name';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { YearLevel } from './year-level.entity';
@@ -17,11 +22,14 @@ export class YearLevelsService {
   async create(dto: CreateYearLevelDto): Promise<YearLevel> {
     const entity = this.repo.create({
       ...dto, // spreads name, is_active, is_deleted
+      name: dto.name.trim(),
+      name_translations: this.translations(dto.name),
       level_id: dto.levelId, // explicitly map levelId → level_id
     });
 
     const saved = await this.repo.save(entity);
     await this.cache.del('year-levels:all');
+    await this.cache.delPattern('lessons:*');
     return saved;
   }
 
@@ -44,7 +52,10 @@ export class YearLevelsService {
   async update(id: string, dto: UpdateYearLevelDto): Promise<YearLevel> {
     const updateData: Partial<YearLevel> = {};
 
-    if (dto.name !== undefined) updateData.name = dto.name.trim();
+    if (dto.name !== undefined) {
+      updateData.name = dto.name.trim();
+      updateData.name_translations = this.translations(dto.name);
+    }
     if (dto.levelId !== undefined) updateData.level_id = dto.levelId;
     if (dto.is_active !== undefined) updateData.is_active = dto.is_active;
     if (dto.is_deleted !== undefined) updateData.is_deleted = dto.is_deleted;
@@ -52,8 +63,6 @@ export class YearLevelsService {
     if (Object.keys(updateData).length === 0) {
       return (await this.findOne(id))!;
     }
-
-    console.log('Direct update data:', updateData);
 
     await this.repo
       .createQueryBuilder()
@@ -63,6 +72,7 @@ export class YearLevelsService {
       .execute();
 
     await this.cache.del('year-levels:all');
+    await this.cache.delPattern('lessons:*');
     return (await this.findOne(id))!;
   }
 
@@ -78,5 +88,13 @@ export class YearLevelsService {
       is_active: false,
     });
     await this.cache.del('year-levels:all');
+    await this.cache.delPattern('lessons:*');
+  }
+  private translations(name: string) {
+    try {
+      return parseBilingualName(name);
+    } catch (error) {
+      throw new BadRequestException(error.message);
+    }
   }
 }

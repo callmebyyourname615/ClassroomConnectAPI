@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Query, Req, ForbiddenException } from '@nestjs/common';
 import {
   RubricReportDataService,
   type AtomicMonthlyReportPublishDto,
@@ -32,6 +32,12 @@ export class RubricReportDataController {
   @Post('payload')
   async createPayload(@Body() body: { data?: SaveRubricReportDataDto }) {
     return { data: await this.service.createTransient(body?.data || (body as SaveRubricReportDataDto)) };
+  }
+
+  @Post('monthly-report-review')
+  async reviewMonthlyReport(@Req() req: any, @Body() body: {configurationId: string; configurationVersion: number}) {
+    if (!req.user?.sub || req.user.user_type === 'parent') throw new ForbiddenException('Staff account required');
+    return {data: await this.service.reviewMonthlyReport(body)};
   }
 
   @Post('monthly-report-publish')

@@ -76,6 +76,7 @@ import { RubricEvaluationFinalScoreModule } from './rubric_evaluation_final_scor
 import { RubricReportDataModule } from './rubric_report_data/rubric-report-data.module';
 import { CacheModule } from './common/cache.module';
 import { KindergartenModule } from './kindergarten/kindergarten.module';
+import { MontessoriModule } from './montessori/montessori.module';
 import { SchemaAlignmentModule } from './database/schema-alignment.module';
 
 @Module({
@@ -113,6 +114,7 @@ import { SchemaAlignmentModule } from './database/schema-alignment.module';
     LoggerModule,
     SchemaAlignmentModule,
     KindergartenModule,
+    MontessoriModule,
     CacheModule,
     HealthModule,
     AuthModule,

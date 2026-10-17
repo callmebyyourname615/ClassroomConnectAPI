@@ -32,15 +32,23 @@ export class SubjectEvaluation {
   @Column()
   topic: string;
 
+  @Column({ type: 'jsonb', nullable: true })
+  topic_translations: { la: string; en: string | null } | null;
+
   @Column({ type: 'text', nullable: true })
   description: string;
+
+  @Column({ type: 'jsonb', nullable: true })
+  description_translations: { la: string; en: string | null } | null;
 
   @Column({ type: 'jsonb', default: [] })
   contents: {
     maxScore?: number;
     t_title: string;
+    t_title_translations?: { la: string; en: string | null } | null;
     t_page: string;
     e_title?: string[];
+    e_title_translations?: ({ la: string; en: string | null } | null)[];
     e_page?: string[];
   }[];
 

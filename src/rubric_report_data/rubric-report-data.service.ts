@@ -1,3 +1,4 @@
+import { reviewMonthlyReport } from './monthly-report-review';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, IsNull, MoreThan, Repository } from 'typeorm';
@@ -335,6 +336,10 @@ export class RubricReportDataService {
         meta: { idempotentReplay: false, attempts },
       };
     });
+  }
+
+  async reviewMonthlyReport(input: {configurationId: string; configurationVersion: number}) {
+    return this.repo.manager.transaction(manager => reviewMonthlyReport(manager, input));
   }
 
   async createTransient(dto: SaveRubricReportDataDto) {
