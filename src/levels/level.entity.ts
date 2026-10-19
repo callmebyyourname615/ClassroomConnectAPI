@@ -14,6 +14,9 @@ export class Level {
   @Column({ unique: true })
   name: string;
 
+  @Column({ type: 'jsonb', nullable: true })
+  name_translations: { la: string; en: string | null } | null;
+
   @CreateDateColumn()
   created_at: Date;
 

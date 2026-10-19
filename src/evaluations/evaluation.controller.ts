@@ -1,4 +1,16 @@
-import { Controller, Post, Body, Get, Param, Patch, Delete, ParseIntPipe, Query } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Param,
+  Patch,
+  Delete,
+  ParseIntPipe,
+  Query,
+  Req,
+  ForbiddenException,
+} from '@nestjs/common';
 import { EvaluationService } from './evaluation.service';
 import { CreateEvaluationDto } from './dto/create-evaluation.dto';
 import { UpdateEvaluationDto } from './dto/update-evaluation.dto';
@@ -8,8 +20,17 @@ import { Evaluation } from './evaluation.entity';
 export class EvaluationController {
   constructor(private readonly evaluationService: EvaluationService) {}
 
+  private requireStaff(request: any) {
+    if (request.user?.user_type === 'parent')
+      throw new ForbiddenException('Staff account required');
+  }
+
   @Post()
-  create(@Body() dto: CreateEvaluationDto): Promise<Evaluation> {
+  create(
+    @Body() dto: CreateEvaluationDto,
+    @Req() request: any,
+  ): Promise<Evaluation> {
+    this.requireStaff(request);
     return this.evaluationService.create(dto);
   }
 
@@ -25,7 +46,10 @@ export class EvaluationController {
   ) {
     return this.evaluationService.findReportSource(
       classId,
-      subjectEvaluationIds.split(',').map((id) => id.trim()).filter(Boolean),
+      subjectEvaluationIds
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean),
     );
   }
 
@@ -38,12 +62,18 @@ export class EvaluationController {
   updateScore(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateEvaluationDto,
+    @Req() request: any,
   ): Promise<Evaluation> {
+    this.requireStaff(request);
     return this.evaluationService.updateScore(id, dto);
   }
 
   @Delete(':id')
-  remove(@Param('id', ParseIntPipe) id: number): Promise<{ message: string }> {
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() request: any,
+  ): Promise<{ message: string }> {
+    this.requireStaff(request);
     return this.evaluationService.remove(id);
   }
 }

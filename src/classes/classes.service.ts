@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { parseBilingualName } from '../common/bilingual-name';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Class } from './class.entity';
@@ -26,7 +27,11 @@ export class ClassesService {
   ) {}
 
   async create(dto: CreateClassDto): Promise<ClassResponse | null> {
-    const entity = this.repo.create(dto);
+    const entity = this.repo.create({
+      ...dto,
+      name: dto.name.trim(),
+      name_translations: this.translations(dto.name),
+    });
     const saved = await this.repo.save(entity);
     return this.findOne(saved.id);
   }
@@ -44,7 +49,15 @@ export class ClassesService {
   }
 
   async update(id: string, dto: UpdateClassDto): Promise<ClassResponse | null> {
-    await this.repo.update(id, dto);
+    await this.repo.update(id, {
+      ...dto,
+      ...(dto.name !== undefined
+        ? {
+            name: dto.name.trim(),
+            name_translations: this.translations(dto.name),
+          }
+        : {}),
+    });
     return this.findOne(id);
   }
 
@@ -96,5 +109,14 @@ export class ClassesService {
           }
         : null,
     };
+  }
+  private translations(name: string) {
+    if (name.length > 255)
+      throw new BadRequestException('Name must be at most 255 characters');
+    try {
+      return parseBilingualName(name);
+    } catch (error) {
+      throw new BadRequestException(error.message);
+    }
   }
 }

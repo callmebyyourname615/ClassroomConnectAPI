@@ -1,9 +1,13 @@
 // ============================================================
 // FILE 8: src/appointment/dto/creator-reschedule.dto.ts
 // ============================================================
-import { IsDateString, Matches } from 'class-validator';
+import { IsDateString, IsOptional, IsString, Matches } from 'class-validator';
 
 export class CreatorRescheduleDto {
+  @IsOptional()
+  @IsString()
+  participant_id?: string;
+
   @IsDateString()
   rescheduled_date: string;
 

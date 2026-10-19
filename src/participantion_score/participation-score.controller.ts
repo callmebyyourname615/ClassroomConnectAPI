@@ -6,6 +6,8 @@ import {
   Delete,
   Body,
   Param,
+  Req,
+  ForbiddenException,
 } from '@nestjs/common';
 import { ParticipationScoreService } from './participation-score.service';
 import { CreateParticipationScoreDto } from './dto/create-participation-score.dto';
@@ -23,6 +25,11 @@ export interface ScoreResult {
 export class ParticipationScoreController {
   constructor(private readonly service: ParticipationScoreService) {}
 
+  private requireStaff(request: any) {
+    if (request.user?.user_type === 'parent')
+      throw new ForbiddenException('Staff account required');
+  }
+
   @Get()
   findAll() {
     return this.service.findAll();
@@ -34,7 +41,8 @@ export class ParticipationScoreController {
   }
 
   @Post()
-  create(@Body() dto: CreateParticipationScoreDto) {
+  create(@Body() dto: CreateParticipationScoreDto, @Req() request: any) {
+    this.requireStaff(request);
     return this.service.create(dto);
   }
 
@@ -49,7 +57,8 @@ export class ParticipationScoreController {
   }
 
   @Post('bulk-upsert')
-  bulkUpsert(@Body() dto: CreateParticipationScoreDto) {
+  bulkUpsert(@Body() dto: CreateParticipationScoreDto, @Req() request: any) {
+    this.requireStaff(request);
     return this.service.bulkUpsert(dto);
   }
 
@@ -67,7 +76,7 @@ export class ParticipationScoreController {
     return this.service.getScoresByFilter({
       branchId: body.branchId,
       academicYearId: body.academicYearId,
-      levelId: body.levelId,      // ← added
+      levelId: body.levelId, // ← added
       classId: body.classId,
       date: body.date,
     });

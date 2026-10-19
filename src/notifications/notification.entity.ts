@@ -86,6 +86,9 @@ export class Notification {
   @Column({ length: 50, nullable: true })
   module_type: string; // TASK, EVENT, etc.
 
+  @Column({ type: 'jsonb', nullable: true })
+  metadata: Record<string, unknown> | null;
+
   @Column({ type: 'smallint', default: 1 })
   target_type: number;
 

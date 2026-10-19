@@ -5,7 +5,12 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindManyOptions, FindOneOptions, Repository } from 'typeorm';
+import {
+  EntityManager,
+  FindManyOptions,
+  FindOneOptions,
+  Repository,
+} from 'typeorm';
 import { Notification } from './notification.entity';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { UpdateNotificationDto } from './dto/update-notification.dto';
@@ -92,6 +97,14 @@ export class NotificationsService implements OnModuleInit {
     return saved;
   }
 
+  async createInTransaction(
+    manager: EntityManager,
+    dto: CreateNotificationDto,
+  ) {
+    const repository = manager.getRepository(Notification);
+    return repository.save(repository.create(dto));
+  }
+
   // ================= GET ALL =================
   async findAll() {
     return this.cache.getOrSet(
@@ -167,6 +180,13 @@ export class NotificationsService implements OnModuleInit {
     );
   }
 
+  async invalidateReportRequestNotifications(branchId: string) {
+    await Promise.all([
+      this.cache.del('notifications:all'),
+      this.cache.del(`notifications:branch:${branchId}`),
+    ]);
+  }
+
   // ================= GET BY PARENT =================
   async findByParent(parentId: string) {
     return this.cache.getOrSet(
@@ -193,6 +213,57 @@ export class NotificationsService implements OnModuleInit {
           order: { created_at: 'DESC' },
         }),
     );
+  }
+
+  // The parent's inbox is scoped by the authenticated JWT, never a client parent ID.
+  async findParentInbox(parentId: string) {
+    const rows = await this.repo.find({
+      where: { parent_id: parentId, is_deleted: false },
+      relations: ['branch', 'student'],
+      order: { created_at: 'DESC', id: 'DESC' },
+    });
+    return rows.map(({ branch, student, ...notification }) => {
+      const studentNames = student
+        ? {
+            la: [student.first_name_lao, student.last_name_lao]
+              .filter(Boolean)
+              .join(' ')
+              .trim(),
+            en:
+              [student.first_name_eng, student.last_name_eng]
+                .filter(Boolean)
+                .join(' ')
+                .trim() || null,
+          }
+        : null;
+      return {
+        ...notification,
+        ...(studentNames?.la || studentNames?.en
+          ? {
+              metadata: {
+                ...notification.metadata,
+                studentNameTranslations: studentNames,
+              },
+            }
+          : {}),
+        sender: branch?.name?.trim() || null,
+        ...(branch?.name_translations
+          ? { sender_translations: branch.name_translations }
+          : {}),
+      };
+    });
+  }
+
+  async setParentRead(id: string, parentId: string, seen: boolean) {
+    const notification = await this.repo.findOne({
+      where: { id, parent_id: parentId, is_deleted: false },
+    });
+    if (!notification) throw new NotFoundException('Notification not found');
+    notification.seen = seen ? 1 : 0;
+    if (seen) notification.clicked = 1;
+    const saved = await this.repo.save(notification);
+    await this.clearNotificationCache(saved);
+    return saved;
   }
 
   // ================= MARK SEEN =================

@@ -13,6 +13,7 @@ import { Enrollment } from '../enrollments/enrollment.entity';
 import { Student } from '../students/student.entity';
 import { TaskSubmissionSlot } from '../task-submission/task-submission-slot.entity';
 import { File } from '../file/files.entity';
+import { notifyTask } from './task-notification';
 import { CacheService } from '../common/cache.service';
 
 @Injectable()
@@ -116,20 +117,27 @@ export class TaskService {
       added_by_type: data.added_by_type,
     });
 
-    const savedTask = await this.taskRepo.save(newTask);
-
-    // Save multiple files
-    if (files?.length) {
-      await this.fileService.createMany(
-        files
-          .filter((file) => file.path)
-          .map((file) => ({
-            module: 'task',
-            task_id: savedTask.id,
-            file_path: file.path,
-          })),
-      );
-    }
+    const savedTask = await this.taskRepo.manager.transaction(
+      async (manager) => {
+        const saved = await manager.save(Task, newTask);
+        if (files?.length) {
+          const repo = manager.getRepository(File);
+          await repo.save(
+            files
+              .filter((file) => file.path)
+              .map((file) =>
+                repo.create({
+                  module: 'task',
+                  task_id: saved.id,
+                  file_path: file.path,
+                }),
+              ),
+          );
+        }
+        await notifyTask(manager, saved, new Date(), true);
+        return saved;
+      },
+    );
 
     const task = await this.taskRepo.findOne({
       where: { id: savedTask.id },
@@ -540,90 +548,111 @@ export class TaskService {
     data: UpdateTaskDto,
     files?: Express.Multer.File[], // รับไฟล์ใหม่จาก frontend
   ): Promise<Task> {
-    const task = await this.findOneUncached(id); // findOne already throws NotFoundException
+    const updatedTask = await this.taskRepo.manager.transaction(
+      async (manager) => {
+        const locked = await manager.findOne(Task, {
+          where: { id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!locked) throw new NotFoundException('Task not found');
+        const task = await manager.findOne(Task, {
+          where: { id },
+          relations: ['student'],
+        });
+        if (!task) throw new NotFoundException('Task not found');
 
-    const {
-      student_id,
-      class_id,
-      deadline,
-      start_date,
-      reminders,
-      settings,
-      assignment_student_ids,
-      assignment_class_ids,
-      ...rest
-    } = data;
+        const {
+          student_id,
+          class_id,
+          deadline,
+          start_date,
+          reminders,
+          settings,
+          assignment_student_ids,
+          assignment_class_ids,
+          ...rest
+        } = data;
 
-    // ถ้ามี student_id ให้ map ไปยัง relation
-    if (student_id) {
-      task.student = { id: student_id } as any;
-    }
+        // ถ้ามี student_id ให้ map ไปยัง relation
+        if (student_id) {
+          task.student = { id: student_id } as any;
+        }
 
-    if (class_id) {
-      task.class = { id: class_id } as any;
-    }
+        if (class_id) {
+          task.class = { id: class_id } as any;
+        }
 
-    // แปลง deadline/start_date ถ้าเป็น string ให้เป็น Date
-    if (deadline) {
-      task.deadline = new Date(deadline);
-    }
-    if (start_date) {
-      task.start_date = new Date(start_date);
-    }
+        // แปลง deadline/start_date ถ้าเป็น string ให้เป็น Date
+        if (deadline) {
+          task.deadline = new Date(deadline);
+        }
+        if (start_date) {
+          task.start_date = new Date(start_date);
+        }
 
-    // Multipart bodies arrive as strings — normalize the same way create() does.
-    const normalizedReminders = this.parseJsonMaybe(reminders);
-    if (normalizedReminders !== undefined) task.reminders = normalizedReminders;
+        // Multipart bodies arrive as strings — normalize the same way create() does.
+        const normalizedReminders = this.parseJsonMaybe(reminders);
+        if (normalizedReminders !== undefined)
+          task.reminders = normalizedReminders;
 
-    const normalizedSettings = this.parseJsonMaybe(settings);
-    if (normalizedSettings !== undefined) task.settings = normalizedSettings;
+        const normalizedSettings = this.parseJsonMaybe(settings);
+        if (normalizedSettings !== undefined)
+          task.settings = normalizedSettings;
 
-    const normalizedStudentIds = this.parseJsonArrayMaybe(
-      assignment_student_ids,
-    );
-    if (normalizedStudentIds !== undefined)
-      task.assignment_student_ids = normalizedStudentIds;
-
-    const normalizedClassIds = this.parseJsonArrayMaybe(assignment_class_ids);
-    if (normalizedClassIds !== undefined)
-      task.assignment_class_ids = normalizedClassIds;
-
-    if (data.status === 'assigned') {
-      const hasNextAssignment = this.hasAssignment({
-        student_id: student_id ?? task.student?.id,
-        class_id: class_id ?? task.class_id,
-        normalizedStudentIds:
-          normalizedStudentIds ?? task.assignment_student_ids,
-        normalizedClassIds: normalizedClassIds ?? task.assignment_class_ids,
-      });
-      if (!hasNextAssignment)
-        throw new BadRequestException(
-          'Task must be assigned to at least one student or class.',
+        const normalizedStudentIds = this.parseJsonArrayMaybe(
+          assignment_student_ids,
         );
-      this.assertReadyForAssignment({
-        name: data.name ?? task.name,
-        description: data.description ?? task.description,
-        subject: data.subject ?? task.subject,
-        deadline: deadline ?? task.deadline,
-        settings: normalizedSettings ?? task.settings,
-      });
-    }
+        if (normalizedStudentIds !== undefined)
+          task.assignment_student_ids = normalizedStudentIds;
 
-    // update field อื่น ๆ (name, description, status, subject, difficulty,
-    // estimated_time_minutes, points, assignment_mode, due_time, visibility, ...)
-    Object.assign(task, rest);
-    const updatedTask = await this.taskRepo.save(task);
+        const normalizedClassIds =
+          this.parseJsonArrayMaybe(assignment_class_ids);
+        if (normalizedClassIds !== undefined)
+          task.assignment_class_ids = normalizedClassIds;
 
-    // ถ้ามีไฟล์ใหม่
-    if (files?.length) {
-      await this.fileService.createMany(
-        files.map((file) => ({
-          module: 'task',
-          task_id: updatedTask.id,
-          file_path: file.path,
-        })),
-      );
-    }
+        if (data.status === 'assigned') {
+          const hasNextAssignment = this.hasAssignment({
+            student_id: student_id ?? task.student?.id,
+            class_id: class_id ?? task.class_id,
+            normalizedStudentIds:
+              normalizedStudentIds ?? task.assignment_student_ids,
+            normalizedClassIds: normalizedClassIds ?? task.assignment_class_ids,
+          });
+          if (!hasNextAssignment)
+            throw new BadRequestException(
+              'Task must be assigned to at least one student or class.',
+            );
+          this.assertReadyForAssignment({
+            name: data.name ?? task.name,
+            description: data.description ?? task.description,
+            subject: data.subject ?? task.subject,
+            deadline: deadline ?? task.deadline,
+            settings: normalizedSettings ?? task.settings,
+          });
+        }
+
+        // update field อื่น ๆ (name, description, status, subject, difficulty,
+        // estimated_time_minutes, points, assignment_mode, due_time, visibility, ...)
+        Object.assign(task, rest);
+        const saved = await manager.save(Task, task);
+        if (files?.length) {
+          const repo = manager.getRepository(File);
+          await repo.save(
+            files
+              .filter((file) => file.path)
+              .map((file) =>
+                repo.create({
+                  module: 'task',
+                  task_id: saved.id,
+                  file_path: file.path,
+                }),
+              ),
+          );
+        }
+        await notifyTask(manager, saved, new Date(), true);
+        return saved;
+      },
+    );
 
     await this.clearTaskCache(id);
     return updatedTask;

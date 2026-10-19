@@ -5,11 +5,16 @@ import { SubjectEvaluation } from './subject-evaluation.entity';
 import { Lesson } from '../lesson/lesson.entity';
 import { CreateSubjectEvaluationDto } from './dto/create-subject-evaluation.dto';
 import { UpdateSubjectEvaluationDto } from './dto/update-subject-evaluation.dto';
+import {
+  evaluationTextTranslations,
+  localizeEvaluationContents,
+} from './subject-evaluation-localization';
 
 const RELATIONS = [
   'lesson',
   'lesson.subjectType',
   'lesson.yearLevel',
+  'lesson.yearLevel.level',
   'lesson.curriculums',
 ];
 
@@ -54,8 +59,10 @@ export class SubjectEvaluationService {
       lessonId,
       lesson,
       topic: dto.topic,
+      topic_translations: evaluationTextTranslations(dto.topic),
       description: dto.description,
-      contents: dto.contents,
+      description_translations: evaluationTextTranslations(dto.description),
+      contents: localizeEvaluationContents(dto.contents),
     });
 
     const saved = await this.evalRepo.save(evalEntity);
@@ -83,8 +90,17 @@ export class SubjectEvaluationService {
     }
 
     evalEntity.topic = dto.topic ?? evalEntity.topic;
+    if (dto.topic !== undefined)
+      evalEntity.topic_translations = evaluationTextTranslations(dto.topic);
     evalEntity.description = dto.description ?? evalEntity.description;
-    evalEntity.contents = dto.contents ?? evalEntity.contents;
+    if (dto.description !== undefined)
+      evalEntity.description_translations = evaluationTextTranslations(
+        dto.description,
+      );
+    evalEntity.contents =
+      dto.contents !== undefined
+        ? localizeEvaluationContents(dto.contents)
+        : evalEntity.contents;
 
     await this.evalRepo.save(evalEntity);
     return this.findOne(id);
@@ -96,6 +112,7 @@ export class SubjectEvaluationService {
       .leftJoinAndSelect('se.lesson', 'lesson')
       .leftJoinAndSelect('lesson.subjectType', 'subjectType')
       .leftJoinAndSelect('lesson.yearLevel', 'yearLevel')
+      .leftJoinAndSelect('yearLevel.level', 'level')
       .leftJoinAndSelect('lesson.curriculums', 'curriculums')
       .where('subjectType.name = :name', { name })
       .getMany();

@@ -14,6 +14,9 @@ export class BranchResponseDto {
   name: string;
 
   @ApiProperty({ required: false, nullable: true })
+  name_translations: { la: string; en: string | null } | null;
+
+  @ApiProperty({ required: false, nullable: true })
   profile_pic: string | null;
 
   @ApiProperty()

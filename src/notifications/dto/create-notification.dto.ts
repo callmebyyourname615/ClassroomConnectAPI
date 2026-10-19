@@ -1,4 +1,10 @@
-import { IsOptional, IsString, IsUUID, IsNumber } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsUUID,
+  IsNumber,
+  IsObject,
+} from 'class-validator';
 
 export class CreateNotificationDto {
   @IsOptional()
@@ -40,6 +46,10 @@ export class CreateNotificationDto {
   @IsOptional()
   @IsString()
   module_type?: string;
+
+  @IsOptional()
+  @IsObject()
+  metadata?: Record<string, unknown>;
 
   @IsOptional()
   @IsNumber()

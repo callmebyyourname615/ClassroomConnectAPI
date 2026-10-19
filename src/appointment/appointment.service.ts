@@ -26,6 +26,7 @@ import {
   PersonType,
 } from './appointment.enum';
 import { AppointmentParticipant } from './dto/appointment-participant.entity';
+import { notifyAppointment } from './appointment-notification';
 import { CacheService } from '../common/cache.service';
 
 @Injectable()
@@ -169,6 +170,7 @@ export class AppointmentService {
         }),
       );
       await manager.save(AppointmentParticipant, rows);
+      await notifyAppointment(manager, appointment, 'created', rows);
 
       await this.clearAppointmentCache(appointment.id);
       return { appointment, participants: rows };
@@ -192,6 +194,8 @@ export class AppointmentService {
         'You have already declined this appointment',
       );
 
+    const previousStatus = participant.status;
+    if (dto.status === previousStatus) return participant;
     switch (dto.status) {
       case ParticipantStatus.ACCEPTED: {
         const now = new Date();
@@ -224,7 +228,22 @@ export class AppointmentService {
         throw new BadRequestException('Invalid status value');
     }
 
-    const saved = await this.participantRepo.save(participant);
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const saved = await manager.save(AppointmentParticipant, participant);
+      if (
+        dto.status === ParticipantStatus.DECLINED ||
+        dto.status === ParticipantStatus.ACCEPTED
+      ) {
+        await notifyAppointment(
+          manager,
+          appt,
+          dto.status === ParticipantStatus.ACCEPTED ? 'accepted' : 'declined',
+          [participant],
+          participant,
+        );
+      }
+      return saved;
+    });
     if (participant.appointment_id) {
       await this.clearAppointmentCache(participant.appointment_id);
     }
@@ -241,11 +260,41 @@ export class AppointmentService {
     if (appointment.status === AppointmentStatus.CANCELLED)
       throw new ForbiddenException('Cannot reschedule a cancelled appointment');
 
+    const actor = dto.participant_id
+      ? (appointment.participants ?? []).find(
+          (p) =>
+            p.id === dto.participant_id &&
+            !p.is_deleted &&
+            p.is_active !== false,
+        )
+      : undefined;
+    if (dto.participant_id && !actor)
+      throw new NotFoundException('Participant not found');
+
     this.assertTimeRange(
       dto.rescheduled_from_time,
       dto.rescheduled_to_time,
       'Rescheduled',
     );
+
+    const currentDate = appointment.rescheduled_date ?? appointment.date;
+    const currentDateText =
+      currentDate instanceof Date
+        ? currentDate.toISOString().slice(0, 10)
+        : String(currentDate).slice(0, 10);
+    if (
+      currentDateText === dto.rescheduled_date.slice(0, 10) &&
+      (appointment.rescheduled_from_time ?? appointment.from_time)?.slice(
+        0,
+        5,
+      ) === dto.rescheduled_from_time.slice(0, 5) &&
+      (appointment.rescheduled_to_time ?? appointment.to_time)?.slice(0, 5) ===
+        dto.rescheduled_to_time.slice(0, 5)
+    )
+      return appointment;
+
+    if (actor && (actor.reschedule_count ?? 0) >= 3)
+      throw new ForbiddenException('Maximum reschedule attempts reached');
 
     // Archive the schedule that was active before this reschedule so the
     // timeline can display an accurate "Previous:" snapshot.
@@ -273,12 +322,34 @@ export class AppointmentService {
       p.response_note = undefined;
       p.responded_at = null;
     }
+    if (actor) {
+      actor.reschedule_count = (actor.reschedule_count ?? 0) + 1;
+      actor.status = ParticipantStatus.RESCHEDULED;
+      actor.responded_at = appointment.rescheduled_at;
+      this.appendParticipantHistory(
+        actor,
+        ParticipantStatus.RESCHEDULED,
+        appointment.rescheduled_at,
+        {
+          proposed_date: dto.rescheduled_date,
+          proposed_from_time: dto.rescheduled_from_time,
+          proposed_to_time: dto.rescheduled_to_time,
+        },
+      );
+    }
 
     return this.dataSource.transaction(async (manager) => {
       await manager.save(Appointment, appointment);
       if (toReset.length) {
         await manager.save(AppointmentParticipant, toReset);
       }
+      await notifyAppointment(
+        manager,
+        appointment,
+        'rescheduled',
+        toReset,
+        actor,
+      );
       await this.clearAppointmentCache(appointment.id);
       return appointment;
     });
@@ -457,8 +528,42 @@ export class AppointmentService {
       this.assertTimeRange(from, to);
     }
 
+    const before = JSON.stringify([
+      existing.date,
+      existing.from_time,
+      existing.to_time,
+      existing.title,
+      existing.description,
+      existing.appointment_place,
+      existing.status,
+    ]);
     Object.assign(existing, dto);
-    const saved = await this.repo.save(existing);
+    const after = JSON.stringify([
+      existing.date,
+      existing.from_time,
+      existing.to_time,
+      existing.title,
+      existing.description,
+      existing.appointment_place,
+      existing.status,
+    ]);
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const saved = await manager.save(Appointment, existing);
+      if (before !== after) {
+        const participants = await manager.find(AppointmentParticipant, {
+          where: { appointment_id: id, is_deleted: false },
+        });
+        await notifyAppointment(
+          manager,
+          saved,
+          saved.status === AppointmentStatus.CANCELLED
+            ? 'cancelled'
+            : 'updated',
+          participants,
+        );
+      }
+      return saved;
+    });
     await this.clearAppointmentCache(id);
     return saved;
   }
@@ -471,6 +576,11 @@ export class AppointmentService {
       });
       if (!a) throw new NotFoundException('Appointment not found');
 
+      const participants = await manager.find(AppointmentParticipant, {
+        where: { appointment_id: id, is_deleted: false },
+      });
+      if (a.status !== AppointmentStatus.CANCELLED)
+        await notifyAppointment(manager, a, 'cancelled', participants);
       a.is_deleted = true;
       a.is_active = false;
       a.status = AppointmentStatus.CANCELLED;

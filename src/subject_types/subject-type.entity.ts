@@ -16,6 +16,9 @@ export class SubjectType {
   @Column({ length: 150, nullable: false, unique: true })
   name: string;
 
+  @Column({ type: 'jsonb', nullable: true })
+  name_translations: { la: string; en: string | null } | null;
+
   @Column({ default: true })
   is_active: boolean;
 

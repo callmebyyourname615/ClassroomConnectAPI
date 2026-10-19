@@ -11,6 +11,7 @@ import { Examination } from '../examination/examination.entity';
 import { CreateExaminationResultDto } from './dto/create-examination-result.dto';
 import { BulkCreateExaminationResultDto } from './dto/bulk-create-examination-result.dto';
 import { UpdateExaminationResultDto } from './dto/update-examination-result.dto';
+import { notifyExaminationResults } from './examination-result-notification';
 
 @Injectable()
 export class ExaminationResultService {
@@ -35,6 +36,18 @@ export class ExaminationResultService {
       );
     }
     return exam;
+  }
+
+  private async saveAndNotify(
+    results: ExaminationResult[],
+  ): Promise<ExaminationResult[]> {
+    return this.resultRepository.manager.transaction(async (manager) => {
+      const saved = await manager
+        .getRepository(ExaminationResult)
+        .save(results);
+      await notifyExaminationResults(manager, saved);
+      return saved;
+    });
   }
 
   private calculateIsPassed(score: number, passScore: number): boolean {
@@ -74,7 +87,7 @@ export class ExaminationResultService {
       isPassed,
     });
 
-    return this.resultRepository.save(result);
+    return (await this.saveAndNotify([result]))[0];
   }
 
   // -------------------------------------------------------
@@ -125,7 +138,7 @@ export class ExaminationResultService {
       );
     }
 
-    return this.resultRepository.save(resultsToSave);
+    return this.saveAndNotify(resultsToSave);
   }
 
   // -------------------------------------------------------
@@ -168,7 +181,9 @@ export class ExaminationResultService {
     });
   }
 
-  async findSummaryByExamination(examinationId: string): Promise<Partial<ExaminationResult>[]> {
+  async findSummaryByExamination(
+    examinationId: string,
+  ): Promise<Partial<ExaminationResult>[]> {
     return this.resultRepository.find({
       select: {
         id: true,
@@ -200,6 +215,11 @@ export class ExaminationResultService {
     dto: UpdateExaminationResultDto,
   ): Promise<ExaminationResult> {
     const result = await this.findOne(id);
+    const changed =
+      (dto.score !== undefined && Number(dto.score) !== Number(result.score)) ||
+      (dto.examinationId !== undefined &&
+        dto.examinationId !== result.examinationId) ||
+      (dto.studentId !== undefined && dto.studentId !== result.studentId);
 
     if (dto.score !== undefined) {
       const exam = await this.getExamination(
@@ -219,7 +239,9 @@ export class ExaminationResultService {
     }
 
     Object.assign(result, dto);
-    return this.resultRepository.save(result);
+    return changed
+      ? (await this.saveAndNotify([result]))[0]
+      : this.resultRepository.save(result);
   }
 
   // -------------------------------------------------------
